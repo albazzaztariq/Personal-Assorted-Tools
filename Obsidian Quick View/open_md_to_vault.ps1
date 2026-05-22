@@ -10,9 +10,15 @@
 #       1. Copy → %TEMP% staging file.
 #       2. Move staging file into the vault's TEMP subfolder.
 #       3. Fire obsidian:// URL pointing at TEMP/<name>.
-#       4. Watch workspace.json; when our file is no longer in any
-#          leaf (user closed the tab), delete the temp file.
-#       5. Register HKCU\RunOnce as a belt-and-suspenders cleanup.
+#       4. Wait for Obsidian's main process to exit (kernel event via
+#          Process.WaitForExit — not polling). When it exits, MOVE the
+#          possibly-edited temp file back over the original source.
+#       5. Register HKCU\RunOnce as a belt-and-suspenders move-back.
+#
+# Earlier versions watched workspace.json for "tab no longer contains
+# our file" — but Obsidian replaces the leaf's file when you click a
+# different file in the sidebar, which fired move-back prematurely.
+# Process-exit is the right trigger.
 #
 # Wrap with ps2exe -noConsole -noOutput -noError to make the resulting
 # .exe fully silent on double-click (no console window, no popups).
@@ -33,7 +39,6 @@ $ErrorActionPreference = 'Stop'
 $VaultRoot      = Join-Path $env:USERPROFILE 'OneDrive\Documents\Obsidian Vault'
 $VaultName      = 'Obsidian Vault'
 $VaultTempDir   = Join-Path $VaultRoot 'TEMP'
-$WorkspaceJson  = Join-Path $VaultRoot '.obsidian\workspace.json'
 $LogPath        = Join-Path $env:USERPROFILE 'open_md_to_vault.log'
 # ───────────────────────────────────────────────────────────────────
 
@@ -53,21 +58,6 @@ function Test-PathIsInside([string]$childPath, [string]$parentDir) {
     $c = (Get-CanonicalPath $childPath).ToLowerInvariant()
     $p = (Get-CanonicalPath $parentDir).ToLowerInvariant() + [char]92
     return $c.StartsWith($p)
-}
-
-# Walk workspace.json's tree looking for a leaf whose state.state.file
-# matches the given vault-relative path. Returns $true if found.
-function Find-FileInWorkspace($node, [string]$relPath) {
-    if ($null -eq $node) { return $false }
-    if ($node.state -and $node.state.state -and $node.state.state.file -eq $relPath) {
-        return $true
-    }
-    if ($node.children) {
-        foreach ($c in $node.children) {
-            if (Find-FileInWorkspace -node $c -relPath $relPath) { return $true }
-        }
-    }
-    return $false
 }
 
 # Fire obsidian://open?vault=...&file=<rel> via ShellExecute.
@@ -156,82 +146,44 @@ try {
     $fileRel = 'TEMP/' + $finalName
     Open-InObsidian -vaultRelPath $fileRel
 
-    # Stage 4: watch workspace.json.
-    if (-not (Test-Path -LiteralPath $WorkspaceJson)) {
-        Log ('workspace.json absent — will not watch; exiting (file stays in TEMP, RunOnce will clean at next login)')
+    # Stage 4: wait for Obsidian's main process to exit, then move
+    # back. The discovery loop polls briefly (every 250 ms for up to
+    # 15 s) so we can latch onto the right PID once Obsidian launches
+    # in response to our URL — there's no event-driven way to learn
+    # the PID of a process you didn't spawn. Once we have the handle,
+    # Process.WaitForExit() blocks on a kernel event, no polling.
+    $obs = $null
+    $deadline = (Get-Date).AddSeconds(15)
+    while (((Get-Date) -lt $deadline) -and -not $obs) {
+        Start-Sleep -Milliseconds 250
+        # Pick the main Obsidian process (one with a visible window).
+        # Electron spawns multiple Obsidian.exe helpers; only the main
+        # one has MainWindowHandle != 0.
+        $obs = Get-Process Obsidian -ErrorAction SilentlyContinue |
+               Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } |
+               Select-Object -First 1
+    }
+
+    if (-not $obs) {
+        Log ('no main Obsidian process found within 15s — exiting without move-back (file stays in TEMP; RunOnce will move-back at next login)')
         exit 0
     }
 
-    $wsDir = Split-Path -Parent $WorkspaceJson
-    $watcher = New-Object System.IO.FileSystemWatcher
-    $watcher.Path = $wsDir
-    $watcher.Filter = 'workspace.json'
-    $watcher.NotifyFilter = [IO.NotifyFilters]::LastWrite -bor [IO.NotifyFilters]::Size
-    $watcher.EnableRaisingEvents = $true
+    Log ('waiting for Obsidian PID ' + $obs.Id + ' to exit')
+    $obs.WaitForExit()
+    Log ('Obsidian exited — moving file back')
 
-    Log ('watching ' + $WorkspaceJson + ' for ' + $fileRel)
-
-    $everSeen       = $false
-    $start          = Get-Date
-    $initialTimeout = 120
-    $waitTimeoutMs  = 30000
-
-    while ($true) {
-        $null = $watcher.WaitForChanged([IO.WatcherChangeTypes]::All, $waitTimeoutMs)
-
-        if (-not (Test-Path -LiteralPath $finalPath)) {
-            Log ('temp file gone (user removed manually) — exiting')
-            break
-        }
-
-        $json = $null
-        for ($try = 0; $try -lt 3; $try++) {
-            try {
-                $raw = Get-Content -Raw -LiteralPath $WorkspaceJson -ErrorAction Stop
-                $json = $raw | ConvertFrom-Json -ErrorAction Stop
-                break
-            } catch {
-                Start-Sleep -Milliseconds 100
-            }
-        }
-        if ($null -eq $json) {
-            Log ('workspace.json read failed — skipping this tick')
-            continue
-        }
-
-        $found = $false
-        foreach ($region in 'main','left','right') {
-            if ($json.$region -and (Find-FileInWorkspace -node $json.$region -relPath $fileRel)) {
-                $found = $true
-                break
-            }
-        }
-
-        if ($found) {
-            if (-not $everSeen) {
-                Log ('file confirmed open in a leaf')
-                $everSeen = $true
-            }
-        } else {
-            if ($everSeen) {
-                # Tab closed. Move the temp file back over the original
-                # source — overwriting it. If the user made no edits the
-                # overwrite is a no-op; if they edited, the edits land
-                # at the original location automatically. Saves having
-                # to detect "was this file edited?" separately.
-                Log ('file no longer in any leaf — user closed the tab; moving back to source')
-                try {
-                    Move-Item -LiteralPath $finalPath -Destination $Path -Force -ErrorAction Stop
-                    Log ('moved back to ' + $Path)
-                } catch {
-                    Log ('move-back failed: ' + $_.Exception.Message + ' — leaving temp in vault')
-                }
-                break
-            }
-            if (((Get-Date) - $start).TotalSeconds -gt $initialTimeout) {
-                Log ('initial timeout — file never appeared in workspace; exiting without move-back')
-                break
-            }
+    # If the temp file was deleted out from under us (user manually
+    # removed it from the vault before closing Obsidian), there's
+    # nothing to move back.
+    if (-not (Test-Path -LiteralPath $finalPath)) {
+        Log ('temp file already gone — nothing to move back')
+    } else {
+        try {
+            Move-Item -LiteralPath $finalPath -Destination $Path -Force -ErrorAction Stop
+            Log ('moved back to ' + $Path)
+        } catch {
+            Log ('move-back failed: ' + $_.Exception.Message + ' — leaving temp in vault')
         }
     }
 

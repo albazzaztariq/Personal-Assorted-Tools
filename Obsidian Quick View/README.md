@@ -7,7 +7,9 @@ A tiny `.exe` that becomes the default handler for `.md` files. Double-click any
 When you double-click a `.md` file in File Explorer, this exe runs and:
 
 1. **If the file is already inside your main Obsidian vault** → just fires `obsidian://open?vault=...&file=<relative-path>` so Obsidian opens it in place. No copy, no extra files, no watcher.
-2. **If the file is outside your vault** → copies it to a `TEMP/` subfolder inside your vault, fires the same `obsidian://` URL pointing at the copy, then watches Obsidian's `workspace.json`. When the tab containing the copy is closed, the copy is **moved back over the original file**, overwriting it. If you didn't edit, the overwrite is a no-op; if you edited, your edits land at the original location automatically. Saves writing a separate "was the file edited?" check. A `HKCU\…\RunOnce` key is registered as a belt-and-suspenders move-back in case the watcher process is killed before it can run.
+2. **If the file is outside your vault** → copies it to a `TEMP/` subfolder inside your vault, fires the same `obsidian://` URL pointing at the copy, then **waits for Obsidian's main process to exit** (kernel-event wait via `Process.WaitForExit()` — not polling). When you close Obsidian, the copy is **moved back over the original file**, overwriting it. If you didn't edit, the overwrite is a no-op; if you edited, your edits land at the original location automatically. Saves writing a separate "was the file edited?" check. A `HKCU\…\RunOnce` key is registered as a belt-and-suspenders move-back in case the watcher process is killed before Obsidian closes.
+
+Why wait for Obsidian to exit rather than for the specific tab to close? Obsidian replaces the leaf's file when you click a different file in the sidebar (opens in the same tab), so monitoring "is our file still in any leaf?" fires too eagerly — the moment you navigate to a different file, you'd lose your temp copy. Process exit is the only reliable "user is done" signal.
 
 That way you can have ONE permanent Obsidian vault and still double-click stray `.md` files from anywhere on the system, with the staging area cleaning itself up.
 
