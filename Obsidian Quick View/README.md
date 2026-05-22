@@ -26,15 +26,17 @@ That way you can have ONE permanent Obsidian vault and still double-click stray 
 
 ## Hardcoded paths
 
-The `.ps1` script has several path constants at the top. Edit and re-wrap if your setup differs:
+The `.ps1` has a `CONFIG` block at the top. Edit and re-wrap with `ps2exe` if your setup differs.
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `$VaultRoot` | `C:\Users\azt12\OneDrive\Documents\Obsidian Vault` | Your main Obsidian vault. |
+| `$VaultRoot` | `%USERPROFILE%\OneDrive\Documents\Obsidian Vault` | Your main Obsidian vault. |
 | `$VaultName` | `Obsidian Vault` | Vault name as it appears in Obsidian's vault list (used in the `obsidian://` URL). |
 | `$VaultTempDir` | `<VaultRoot>\TEMP` | Where out-of-vault files get staged. |
 | `$WorkspaceJson` | `<VaultRoot>\.obsidian\workspace.json` | Watched for tab-close detection. |
-| `$LogPath` | `C:\Users\azt12\open_md_to_vault.log` | Append-only operational log. |
+| `$LogPath` | `%USERPROFILE%\open_md_to_vault.log` | Append-only operational log. |
+
+`%USERPROFILE%` resolves at runtime via `$env:USERPROFILE`, so the same `.exe` works for any Windows user account — no username baked in.
 
 ## How the tab-close detection works
 

@@ -2,8 +2,7 @@
 #
 # Decides what to do based on where the source file already lives:
 #
-#   • If the source is ALREADY inside the main vault
-#     (C:\Users\azt12\OneDrive\Documents\Obsidian Vault\…):
+#   • If the source is ALREADY inside the main vault:
 #       Just fire obsidian://open?vault=...&file=<vault-relative>
 #       so Obsidian opens it in place. NO copy. NO TEMP. NO watcher.
 #
@@ -15,8 +14,8 @@
 #          leaf (user closed the tab), delete the temp file.
 #       5. Register HKCU\RunOnce as a belt-and-suspenders cleanup.
 #
-# Wrapped with ps2exe -noConsole -noOutput -noError so the .exe is
-# fully silent on double-click (no console window, no popups).
+# Wrap with ps2exe -noConsole -noOutput -noError to make the resulting
+# .exe fully silent on double-click (no console window, no popups).
 
 [CmdletBinding()]
 param(
@@ -26,11 +25,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$VaultRoot      = 'C:\Users\azt12\OneDrive\Documents\Obsidian Vault'
+# ─── CONFIG ─── edit these for your environment ────────────────────
+# Defaults assume a vault at:
+#   %USERPROFILE%\OneDrive\Documents\Obsidian Vault
+# named "Obsidian Vault" in Obsidian's vault list. If yours is elsewhere
+# or named differently, change these lines (and re-wrap with ps2exe).
+$VaultRoot      = Join-Path $env:USERPROFILE 'OneDrive\Documents\Obsidian Vault'
 $VaultName      = 'Obsidian Vault'
-$VaultTempDir   = Join-Path -Path $VaultRoot -ChildPath 'TEMP'
-$WorkspaceJson  = Join-Path -Path $VaultRoot -ChildPath '.obsidian\workspace.json'
-$LogPath        = 'C:\Users\azt12\open_md_to_vault.log'
+$VaultTempDir   = Join-Path $VaultRoot 'TEMP'
+$WorkspaceJson  = Join-Path $VaultRoot '.obsidian\workspace.json'
+$LogPath        = Join-Path $env:USERPROFILE 'open_md_to_vault.log'
+# ───────────────────────────────────────────────────────────────────
 
 function Log($msg) {
     $ts = (Get-Date -Format 'HH:mm:ss.fff')
@@ -38,7 +43,6 @@ function Log($msg) {
 }
 
 # Normalize a path to its canonical full form for prefix comparison.
-# Resolves relative segments, but does NOT require the path to exist.
 function Get-CanonicalPath([string]$p) {
     return [System.IO.Path]::GetFullPath($p).TrimEnd([char]92)
 }
@@ -93,8 +97,6 @@ try {
 
     if (Test-PathIsInside -childPath $srcFull -parentDir $vaultFull) {
         # File lives in the vault already — just open it in place.
-        # Compute vault-relative path with forward slashes for the URL
-        # (obsidian:// expects /, not \).
         $rel = $srcFull.Substring($vaultFull.Length + 1).Replace([char]92, '/')
         Log ('source is INSIDE vault — relative=' + $rel + ' — opening in place, no copy')
         Open-InObsidian -vaultRelPath $rel
@@ -106,7 +108,6 @@ try {
 
     # ── Outside-vault flow ──────────────────────────────────────────
 
-    # Ensure the destination subfolder exists.
     if (-not (Test-Path -LiteralPath $VaultTempDir)) {
         New-Item -ItemType Directory -Path $VaultTempDir -Force | Out-Null
         Log ('created vault TEMP subfolder')
