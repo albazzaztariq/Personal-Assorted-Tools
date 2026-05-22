@@ -138,10 +138,12 @@ try {
     Move-Item -LiteralPath $tempStage -Destination $finalPath -Force
     Log ('moved to vault')
 
-    # Belt-and-suspenders RunOnce cleanup.
+    # Belt-and-suspenders RunOnce cleanup. If we get killed before the
+    # watcher fires, this runs at next login and moves the (possibly
+    # edited) temp file back over the original. `move /Y` overwrites.
     $runOnceKey  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
-    $runOnceName = 'ObsTempCleanup_' + ([guid]::NewGuid().Guid.Substring(0,8))
-    $runOnceCmd  = 'cmd /c del /F /Q "' + $finalPath + '"'
+    $runOnceName = 'ObsTempMoveBack_' + ([guid]::NewGuid().Guid.Substring(0,8))
+    $runOnceCmd  = 'cmd /c move /Y "' + $finalPath + '" "' + $Path + '"'
     try {
         if (-not (Test-Path -LiteralPath $runOnceKey)) { New-Item -Path $runOnceKey -Force | Out-Null }
         New-ItemProperty -LiteralPath $runOnceKey -Name $runOnceName -Value $runOnceCmd -PropertyType String -Force | Out-Null
@@ -212,12 +214,22 @@ try {
             }
         } else {
             if ($everSeen) {
-                Log ('file no longer in any leaf — user closed the tab; deleting')
-                Remove-Item -LiteralPath $finalPath -Force -ErrorAction SilentlyContinue
+                # Tab closed. Move the temp file back over the original
+                # source — overwriting it. If the user made no edits the
+                # overwrite is a no-op; if they edited, the edits land
+                # at the original location automatically. Saves having
+                # to detect "was this file edited?" separately.
+                Log ('file no longer in any leaf — user closed the tab; moving back to source')
+                try {
+                    Move-Item -LiteralPath $finalPath -Destination $Path -Force -ErrorAction Stop
+                    Log ('moved back to ' + $Path)
+                } catch {
+                    Log ('move-back failed: ' + $_.Exception.Message + ' — leaving temp in vault')
+                }
                 break
             }
             if (((Get-Date) - $start).TotalSeconds -gt $initialTimeout) {
-                Log ('initial timeout — file never appeared in workspace; exiting without delete')
+                Log ('initial timeout — file never appeared in workspace; exiting without move-back')
                 break
             }
         }

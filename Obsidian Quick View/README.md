@@ -7,7 +7,7 @@ A tiny `.exe` that becomes the default handler for `.md` files. Double-click any
 When you double-click a `.md` file in File Explorer, this exe runs and:
 
 1. **If the file is already inside your main Obsidian vault** → just fires `obsidian://open?vault=...&file=<relative-path>` so Obsidian opens it in place. No copy, no extra files, no watcher.
-2. **If the file is outside your vault** → copies it to a `TEMP/` subfolder inside your vault, fires the same `obsidian://` URL pointing at the copy, then watches Obsidian's `workspace.json`. When the tab containing the copy is closed, the copy is auto-deleted. A `HKCU\…\RunOnce` key is registered as a belt-and-suspenders cleanup in case the watcher process is killed before it can clean up.
+2. **If the file is outside your vault** → copies it to a `TEMP/` subfolder inside your vault, fires the same `obsidian://` URL pointing at the copy, then watches Obsidian's `workspace.json`. When the tab containing the copy is closed, the copy is **moved back over the original file**, overwriting it. If you didn't edit, the overwrite is a no-op; if you edited, your edits land at the original location automatically. Saves writing a separate "was the file edited?" check. A `HKCU\…\RunOnce` key is registered as a belt-and-suspenders move-back in case the watcher process is killed before it can run.
 
 That way you can have ONE permanent Obsidian vault and still double-click stray `.md` files from anywhere on the system, with the staging area cleaning itself up.
 
